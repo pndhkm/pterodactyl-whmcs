@@ -300,6 +300,33 @@ function pterodactyl_GetOption(array $params, $id, $default = NULL) {
     return $default;
 }
 
+
+function pterodactyl_GetNetworkInfo(array $params, $serverId) {
+    try {
+        // Melakukan API call untuk mengambil informasi jaringan
+        $networkResult = pterodactyl_API($params, 'servers/' . $serverId . '/network/allocations', [], 'GET');
+        
+        if ($networkResult['status_code'] !== 200) {
+            throw new Exception('Failed to get network info, received error code: ' . $networkResult['status_code']);
+        }
+
+        // Memproses hasil dari API call
+        $networkData = $networkResult['data'];  // Sesuaikan ini sesuai dengan struktur data yang dikembalikan oleh API
+        
+        // Misalnya, ambil IP dan Port
+        $ip = $networkData['attributes']['ip'];
+        $port = $networkData['attributes']['port'];
+
+        return [
+            'ip' => $ip,
+            'port' => $port,
+        ];
+    } catch (Exception $err) {
+        return 'Error: ' . $err->getMessage();
+    }
+}
+
+
 function pterodactyl_CreateAccount(array $params) {
     try {
         $serverId = pterodactyl_GetServerID($params);
@@ -315,6 +342,7 @@ function pterodactyl_CreateAccount(array $params) {
                     'first_name' => $params['clientsdetails']['firstname'],
                     'last_name' => $params['clientsdetails']['lastname'],
                     'external_id' => (string) $params['clientsdetails']['id'],
+                    'password' => $params['password'],
                 ], 'POST');
             } else {
                 foreach($userResult['data'] as $key => $value) {
@@ -329,6 +357,7 @@ function pterodactyl_CreateAccount(array $params) {
 
         if($userResult['status_code'] === 200 || $userResult['status_code'] === 201) {
             $userId = $userResult['attributes']['id'];
+            $username = $userResult['attributes']['username'];  
         } else {
             throw new Exception('Failed to create user, received error code: ' . $userResult['status_code'] . '. Enable module debug log for more info.');
         }
@@ -398,12 +427,11 @@ function pterodactyl_CreateAccount(array $params) {
             'external_id' => (string) $params['serviceid'],
         ];
 
+
         $server = pterodactyl_API($params, 'servers?include=allocations', $serverData, 'POST');
 
         if($server['status_code'] === 400) throw new Exception('Couldn\'t find any nodes satisfying the request.');
         if($server['status_code'] !== 201) throw new Exception('Failed to create the server, received the error code: ' . $server['status_code'] . '. Enable module debug log for more info.');
-
-        unset($params['password']);
 
         // Get IP & Port and set on WHMCS "Dedicated IP" field
         $_IP = $server['attributes']['relationships']['allocations']['data'][0]['attributes']['ip'];
@@ -411,14 +439,13 @@ function pterodactyl_CreateAccount(array $params) {
         
         // Check if IP & Port field have value. Prevents ":" being added if API error
         if (isset($_IP) && isset($_Port)) {
-        try {
-			$query = Capsule::table('tblhosting')->where('id', $params['serviceid'])->where('userid', $params['userid'])->update(array('dedicatedip' => $_IP . ":" . $_Port));
-		} catch (Exception $e) { return $e->getMessage() . "<br />" . $e->getTraceAsString(); }
-    }
+            try {
+                $query = Capsule::table('tblhosting')->where('id', $params['serviceid'])->where('userid', $params['userid'])->update(array('dedicatedip' => $_IP . ":" . $_Port));
+            } catch (Exception $e) { return $e->getMessage() . "<br />" . $e->getTraceAsString(); }
+        }
 
         Capsule::table('tblhosting')->where('id', $params['serviceid'])->update([
-            'username' => '',
-            'password' => '',
+            'username' => $username,
         ]);
     } catch(Exception $err) {
         return $err->getMessage();
@@ -427,7 +454,6 @@ function pterodactyl_CreateAccount(array $params) {
     return 'success';
 }
 
-// Function to allow backwards compatibility with death-droid's module
 function pterodactyl_GetServerID(array $params, $raw = false) {
     $serverResult = pterodactyl_API($params, 'servers/external/' . $params['serviceid'], [], 'GET', true);
     if($serverResult['status_code'] === 200) {
@@ -518,15 +544,13 @@ function pterodactyl_ChangePassword(array $params) {
             'email' => $userResult['attributes']['email'],
             'first_name' => $userResult['attributes']['first_name'],
             'last_name' => $userResult['attributes']['last_name'],
-
             'password' => $params['password'],
         ], 'PATCH');
+
         if($updateResult['status_code'] !== 200) throw new Exception('Failed to change password, received error code: ' . $updateResult['status_code'] . '.');
 
-        unset($params['password']);
         Capsule::table('tblhosting')->where('id', $params['serviceid'])->update([
-            'username' => '',
-            'password' => '',
+            'username' => $userResult['attributes']['username'], 
         ]);
     } catch(Exception $err) {
         return $err->getMessage();
@@ -534,6 +558,7 @@ function pterodactyl_ChangePassword(array $params) {
 
     return 'success';
 }
+
 
 function pterodactyl_ChangePackage(array $params) {
     try {
@@ -615,7 +640,6 @@ function pterodactyl_LoginLink(array $params) {
         $hostname = pterodactyl_GetHostname($params);
         echo '<a style="padding-right:3px" href="'.$hostname.'/admin/servers/view/' . $serverId . '" target="_blank">[Go to Service]</a>';
         echo '<p style="float:right; padding-right:1.3%">[<a href="https://github.com/pterodactyl/whmcs/issues" target="_blank">Report A Bug</a>]</p>';
-        # echo '<p style="float: right">[<a href="https://github.com/pterodactyl/whmcs/issues" target="_blank">Report A Bug</a>]</p>';
     } catch(Exception $err) {
         // Ignore
     }
@@ -623,7 +647,7 @@ function pterodactyl_LoginLink(array $params) {
 
 function pterodactyl_ClientArea(array $params) {
     if($params['moduletype'] !== 'pterodactyl') return;
-
+    $assetsURL = "templates/assets";
     try {
         $hostname = pterodactyl_GetHostname($params);
         $serverData = pterodactyl_GetServerID($params, true);
@@ -638,6 +662,7 @@ function pterodactyl_ClientArea(array $params) {
             'templatefile' => 'clientarea',
             'vars' => [
                 'serviceurl' => $hostname . '/server/' . $serverData['attributes']['identifier'],
+                'assetsURL' => $assetsURL,
             ],
         ];
     } catch (Exception $err) {
